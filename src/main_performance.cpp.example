@@ -1,0 +1,198 @@
+/**
+ * @file main_performance.cpp
+ * @brief High-performance main application
+ *
+ * Optimized for maximum streaming performance on ESP32-CAM.
+ * Features:
+ * - Dedicated FreeRTOS task for streaming (Core 0)
+ * - Speed-optimized camera settings
+ * - Minimal overhead in main loop
+ * - PSRAM optimization
+ *
+ * @author ESP32 CAM Webserver v5.0
+ * @date 2025
+ */
+
+#include <Arduino.h>
+#include "core/Logger.h"
+#include "core/Config.h"
+#include "core/DependencyContainer.h"
+#include "application/ApplicationFacade.h"
+#include "infrastructure/network/WiFiManager.h"
+#include "infrastructure/tasks/StreamTask.h"
+#include "presentation/http/HttpServer.h"
+
+// Performance: Disable unnecessary features
+#define DISABLE_DETAILED_LOGGING
+
+// Global instances
+WiFiManager wifiManager("esp32-cam");
+HttpServer httpServer(80);
+
+/**
+ * @brief Setup - runs once at startup
+ */
+void setup() {
+    // Serial setup
+    Serial.begin(115200);
+    delay(100);
+
+    Logger& logger = Logger::getInstance();
+
+    #ifdef DISABLE_DETAILED_LOGGING
+    logger.setLevel(LogLevel::WARN); // Only warnings and errors
+    #else
+    logger.setLevel(LogLevel::INFO);
+    #endif
+
+    logger.info("MAIN", "ESP32-CAM v5.0 - PERFORMANCE MODE");
+
+    // ========================================================================
+    // PERFORMANCE: Check PSRAM availability
+    // ========================================================================
+
+    if (!psramFound()) {
+        logger.fatal("MAIN", "PSRAM not found! Required for high performance");
+        while (true) { delay(1000); }
+    }
+
+    logger.info("MAIN", "PSRAM: " + String(ESP.getPsramSize() / 1024) + " KB");
+
+    // ========================================================================
+    // Core Initialization
+    // ========================================================================
+
+    Config& config = Config::getInstance();
+    config.load();
+
+    // ========================================================================
+    // WiFi - Quick Connect
+    // ========================================================================
+
+    wifiManager.initialize();
+
+    String ssid = config.getWiFiSSID();
+    String password = config.getWiFiPassword();
+
+    if (ssid.length() > 0) {
+        auto wifiCredsResult = WiFiCredentials::create(ssid, password);
+        if (wifiCredsResult.isOk()) {
+            logger.info("MAIN", "Connecting to WiFi...");
+            auto connectResult = wifiManager.connect(wifiCredsResult.getValue(), 15000);
+
+            if (connectResult.isOk()) {
+                logger.info("MAIN", "Connected: " + wifiManager.getIPAddress().toString());
+            } else {
+                logger.warn("MAIN", "WiFi failed, starting AP");
+                wifiManager.startAP();
+            }
+        }
+    } else {
+        wifiManager.startAP();
+    }
+
+    // PERFORMANCE: Disable WiFi power saving
+    WiFi.setSleep(false);
+    logger.info("MAIN", "WiFi power saving disabled");
+
+    // ========================================================================
+    // Dependency Container
+    // ========================================================================
+
+    DependencyContainer& container = DependencyContainer::getInstance();
+    if (!container.initialize()) {
+        logger.fatal("MAIN", "DI container init failed");
+        while (true) { delay(1000); }
+    }
+
+    // ========================================================================
+    // Application Layer
+    // ========================================================================
+
+    ApplicationFacade& app = ApplicationFacade::getInstance();
+    if (!app.initialize()) {
+        logger.fatal("MAIN", "Application init failed");
+        while (true) { delay(1000); }
+    }
+
+    // ========================================================================
+    // PERFORMANCE: Apply speed optimizations
+    // ========================================================================
+
+    logger.info("MAIN", "Applying speed optimizations...");
+
+    auto optimizeResult = app.camera().optimizeForSpeed();
+    if (optimizeResult.isOk()) {
+        logger.info("MAIN", "Camera optimized for speed");
+    }
+
+    // Additional speed tweaks
+    app.camera().setAutoWhiteBalance(true);  // Auto is faster
+    app.camera().setAutoExposureControl(true);
+
+    // ========================================================================
+    // HTTP Server
+    // ========================================================================
+
+    if (!httpServer.initialize()) {
+        logger.fatal("MAIN", "HTTP server init failed");
+        while (true) { delay(1000); }
+    }
+
+    httpServer.start();
+
+    // ========================================================================
+    // PERFORMANCE: Start dedicated streaming task
+    // ========================================================================
+
+    logger.info("MAIN", "Starting streaming task on Core 0...");
+
+    if (!StreamTask::start()) {
+        logger.error("MAIN", "Failed to start stream task");
+        logger.warn("MAIN", "Falling back to main loop streaming");
+    } else {
+        logger.info("MAIN", "Stream task running at 30 FPS");
+    }
+
+    // ========================================================================
+    // PERFORMANCE: CPU Frequency
+    // ========================================================================
+
+    uint32_t cpuFreq = getCpuFrequencyMhz();
+    logger.info("MAIN", "CPU Frequency: " + String(cpuFreq) + " MHz");
+
+    if (cpuFreq < 240) {
+        logger.warn("MAIN", "CPU running below 240 MHz - reduce performance");
+    }
+
+    // ========================================================================
+    // Startup Complete
+    // ========================================================================
+
+    logger.info("MAIN", "========================================");
+    logger.info("MAIN", "ESP32-CAM READY - PERFORMANCE MODE");
+    logger.info("MAIN", "========================================");
+    logger.info("MAIN", "IP: " + wifiManager.getIPAddress().toString());
+    logger.info("MAIN", "Stream: http://" + wifiManager.getIPAddress().toString() + "/api/stream/mjpeg");
+    logger.info("MAIN", "WebSocket: ws://" + wifiManager.getIPAddress().toString() + "/ws");
+    logger.info("MAIN", "========================================");
+    logger.info("MAIN", "Free Heap: " + String(ESP.getFreeHeap() / 1024) + " KB");
+    logger.info("MAIN", "Free PSRAM: " + String(ESP.getFreePsram() / 1024) + " KB");
+    logger.info("MAIN", "========================================");
+}
+
+/**
+ * @brief Loop - minimal overhead
+ */
+void loop() {
+    // PERFORMANCE: Only essential operations in main loop
+
+    // WiFi auto-reconnect (runs every ~5 seconds internally)
+    wifiManager.update();
+
+    // WebSocket cleanup (lightweight)
+    httpServer.update();
+
+    // PERFORMANCE: Longer delay since streaming runs in separate task
+    delay(100); // 10 Hz is enough for housekeeping
+}
