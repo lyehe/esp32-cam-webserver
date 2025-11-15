@@ -1,0 +1,153 @@
+/**
+ * @file main.cpp
+ * @brief Main application entry point
+ *
+ * Example implementation showing how to initialize and run the
+ * ESP32-CAM webserver with Clean Architecture.
+ *
+ * @author ESP32 CAM Webserver v5.0
+ * @date 2025
+ */
+
+#include <Arduino.h>
+#include "core/Logger.h"
+#include "core/Config.h"
+#include "core/DependencyContainer.h"
+#include "application/ApplicationFacade.h"
+#include "infrastructure/network/WiFiManager.h"
+#include "presentation/http/HttpServer.h"
+
+// Global instances
+WiFiManager wifiManager("esp32-cam");
+HttpServer httpServer(80);
+
+/**
+ * @brief Setup - runs once at startup
+ */
+void setup() {
+    // Initialize serial for logging
+    Serial.begin(115200);
+    delay(100);
+
+    Logger& logger = Logger::getInstance();
+    logger.setLevel(LogLevel::INFO);
+    logger.info("MAIN", "ESP32-CAM Webserver v5.0 starting...");
+
+    // ========================================================================
+    // Phase 1: Initialize Core Systems
+    // ========================================================================
+
+    logger.info("MAIN", "Phase 1: Core initialization");
+
+    // Load configuration
+    Config& config = Config::getInstance();
+    auto configResult = config.load();
+    if (configResult.isError()) {
+        logger.warn("MAIN", "Failed to load config: " + configResult.getError());
+        logger.info("MAIN", "Using default configuration");
+    }
+
+    // ========================================================================
+    // Phase 2: Initialize WiFi
+    // ========================================================================
+
+    logger.info("MAIN", "Phase 2: WiFi initialization");
+
+    wifiManager.initialize();
+
+    // Get WiFi credentials from config
+    String ssid = config.getWiFiSSID();
+    String password = config.getWiFiPassword();
+
+    if (ssid.length() > 0) {
+        // Connect to WiFi network
+        auto wifiCredsResult = WiFiCredentials::create(ssid, password);
+        if (wifiCredsResult.isOk()) {
+            auto connectResult = wifiManager.connect(wifiCredsResult.getValue(), 30000);
+            if (connectResult.isOk()) {
+                logger.info("MAIN", "WiFi connected: " + wifiManager.getIPAddress().toString());
+            } else {
+                logger.error("MAIN", "WiFi connection failed, starting AP mode");
+                wifiManager.startAP();
+            }
+        }
+    } else {
+        // Start in AP mode (no WiFi configured)
+        logger.info("MAIN", "No WiFi configured, starting AP mode");
+        wifiManager.startAP();
+    }
+
+    logger.info("MAIN", wifiManager.getConnectionInfo());
+
+    // ========================================================================
+    // Phase 3: Initialize Dependency Container
+    // ========================================================================
+
+    logger.info("MAIN", "Phase 3: Dependency container initialization");
+
+    DependencyContainer& container = DependencyContainer::getInstance();
+    if (!container.initialize()) {
+        logger.fatal("MAIN", "Failed to initialize dependency container");
+        while (true) { delay(1000); } // Halt
+    }
+
+    // ========================================================================
+    // Phase 4: Initialize Application Layer
+    // ========================================================================
+
+    logger.info("MAIN", "Phase 4: Application layer initialization");
+
+    ApplicationFacade& app = ApplicationFacade::getInstance();
+    if (!app.initialize()) {
+        logger.fatal("MAIN", "Failed to initialize application layer");
+        while (true) { delay(1000); } // Halt
+    }
+
+    // ========================================================================
+    // Phase 5: Initialize Presentation Layer
+    // ========================================================================
+
+    logger.info("MAIN", "Phase 5: HTTP server initialization");
+
+    if (!httpServer.initialize()) {
+        logger.fatal("MAIN", "Failed to initialize HTTP server");
+        while (true) { delay(1000); } // Halt
+    }
+
+    httpServer.start();
+
+    // ========================================================================
+    // Startup Complete
+    // ========================================================================
+
+    logger.info("MAIN", "========================================");
+    logger.info("MAIN", "ESP32-CAM Webserver v5.0 READY");
+    logger.info("MAIN", "========================================");
+    logger.info("MAIN", "IP Address: " + wifiManager.getIPAddress().toString());
+    logger.info("MAIN", "Web Interface: http://" + wifiManager.getIPAddress().toString());
+    logger.info("MAIN", "API Endpoint: http://" + wifiManager.getIPAddress().toString() + "/api");
+    logger.info("MAIN", "MJPEG Stream: http://" + wifiManager.getIPAddress().toString() + "/api/stream/mjpeg");
+    logger.info("MAIN", "WebSocket: ws://" + wifiManager.getIPAddress().toString() + "/ws");
+    logger.info("MAIN", "========================================");
+    logger.info("MAIN", "Default Login: admin / admin123");
+    logger.info("MAIN", "*** CHANGE PASSWORD IMMEDIATELY ***");
+    logger.info("MAIN", "========================================");
+
+    // Print memory info
+    logger.info("MAIN", "Free heap: " + String(ESP.getFreeHeap()) + " bytes");
+    logger.info("MAIN", "Free PSRAM: " + String(ESP.getFreePsram()) + " bytes");
+}
+
+/**
+ * @brief Loop - runs continuously
+ */
+void loop() {
+    // Update WiFi manager (handles auto-reconnect)
+    wifiManager.update();
+
+    // Update HTTP server (handles WebSocket broadcasting)
+    httpServer.update();
+
+    // Small delay to prevent watchdog timeout
+    delay(10);
+}
