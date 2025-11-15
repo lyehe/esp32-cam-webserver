@@ -12,7 +12,6 @@
 #include "../entities/CameraSettings.h"
 #include "../entities/User.h"
 #include "../../core/Result.h"
-#include <ArduinoJson.h>
 
 /**
  * @brief Storage repository interface

@@ -11,6 +11,7 @@
 
 #include <Arduino.h>
 #include "CameraSettings.h"
+#include "../value_objects/PixelFormat.h"
 #include "../../core/Result.h"
 
 /**
@@ -34,14 +35,14 @@ struct Frame {
     size_t length;
     uint32_t width;
     uint32_t height;
-    pixformat_t format;
+    PixelFormat format;
     uint32_t timestamp;
 
     Frame()
         : buffer(nullptr), length(0), width(0), height(0),
-          format(PIXFORMAT_JPEG), timestamp(0) {}
+          format(PixelFormat::JPEG()), timestamp(0) {}
 
-    Frame(uint8_t* buf, size_t len, uint32_t w, uint32_t h, pixformat_t fmt)
+    Frame(uint8_t* buf, size_t len, uint32_t w, uint32_t h, PixelFormat fmt)
         : buffer(buf), length(len), width(w), height(h),
           format(fmt), timestamp(millis()) {}
 

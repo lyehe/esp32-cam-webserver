@@ -10,7 +10,6 @@
 #define CAMERA_SETTINGS_H
 
 #include <Arduino.h>
-#include "esp_camera.h"
 #include "../value_objects/Resolution.h"
 #include "../value_objects/PixelFormat.h"
 
