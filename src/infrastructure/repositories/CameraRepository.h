@@ -17,6 +17,8 @@
 #include "../TypeMappers.h"
 #include "../../core/Logger.h"
 #include <memory>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 /**
  * @brief ESP32 Camera Repository
@@ -31,14 +33,29 @@ private:
     std::unique_ptr<ESP32CameraDriver> _driver;
     CameraSettings _currentSettings;
     bool _initialized;
+    uint8_t _lampIntensity;
+    SemaphoreHandle_t _mutex;  // Thread safety for concurrent access
 
 public:
     /**
      * @brief Constructor
      */
     CameraRepository(const CameraPins& pins = CameraPins::AIThinker())
-        : _initialized(false) {
+        : _initialized(false), _lampIntensity(0) {
         _driver = std::make_unique<ESP32CameraDriver>(pins);
+        _mutex = xSemaphoreCreateMutex();
+        if (!_mutex) {
+            Logger::getInstance().error(TAG, "Failed to create mutex");
+        }
+    }
+
+    /**
+     * @brief Destructor
+     */
+    ~CameraRepository() {
+        if (_mutex) {
+            vSemaphoreDelete(_mutex);
+        }
     }
 
     /**
@@ -78,16 +95,27 @@ public:
     }
 
     /**
-     * @brief Capture a frame
+     * @brief Capture a frame (thread-safe)
      */
     Result<Frame> captureFrame() override {
+        if (!_mutex) {
+            return Result<Frame>::error("Mutex not initialized");
+        }
+
+        // Acquire mutex for thread safety
+        if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            return Result<Frame>::error("Failed to acquire camera lock (timeout)");
+        }
+
         if (!_initialized) {
+            xSemaphoreGive(_mutex);
             return Result<Frame>::error("Camera not initialized");
         }
 
         // Capture hardware frame
         auto fbResult = _driver->captureFrame();
         if (fbResult.isError()) {
+            xSemaphoreGive(_mutex);
             return Result<Frame>::error(fbResult.getError());
         }
 
@@ -95,6 +123,8 @@ public:
 
         // Convert to domain Frame
         Frame domainFrame = TypeMappers::fromHardwareFrame(fb);
+
+        xSemaphoreGive(_mutex);
 
         // Note: We don't release the hardware frame here
         // The caller must call releaseFrame() when done
@@ -118,19 +148,31 @@ public:
     }
 
     /**
-     * @brief Update camera settings
+     * @brief Update camera settings (thread-safe)
      */
     Result<void> updateSettings(const CameraSettings& settings) override {
+        if (!_mutex) {
+            return Result<void>::error("Mutex not initialized");
+        }
+
+        if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            return Result<void>::error("Failed to acquire camera lock (timeout)");
+        }
+
         if (!_initialized) {
+            xSemaphoreGive(_mutex);
             return Result<void>::error("Camera not initialized");
         }
 
         auto result = _driver->updateSettings(settings);
         if (result.isError()) {
+            xSemaphoreGive(_mutex);
             return result;
         }
 
         _currentSettings = settings;
+        xSemaphoreGive(_mutex);
+
         Logger::getInstance().info(TAG, "Settings updated");
         return Result<void>::ok();
     }
@@ -143,14 +185,29 @@ public:
     }
 
     /**
-     * @brief Set lamp intensity
+     * @brief Set lamp intensity (thread-safe)
      */
     Result<void> setLampIntensity(uint8_t intensity) override {
+        if (!_mutex) {
+            return Result<void>::error("Mutex not initialized");
+        }
+
+        if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            return Result<void>::error("Failed to acquire camera lock (timeout)");
+        }
+
         if (!_initialized) {
+            xSemaphoreGive(_mutex);
             return Result<void>::error("Camera not initialized");
         }
 
-        return _driver->setLampIntensity(intensity);
+        auto result = _driver->setLampIntensity(intensity);
+        if (result.isOk()) {
+            _lampIntensity = intensity;
+        }
+
+        xSemaphoreGive(_mutex);
+        return result;
     }
 
     /**
@@ -232,6 +289,38 @@ public:
     Result<void> setSaturation(int8_t level) override {
         _currentSettings.setSaturation(level);
         return _driver->updateSettings(_currentSettings);
+    }
+
+    /**
+     * @brief Get camera info (creates Camera entity with current state)
+     */
+    Camera getCameraInfo() const override {
+        String model = _driver->getSensorModel();
+        Camera camera(model);
+
+        if (_initialized) {
+            camera.updateSettings(_currentSettings);
+            camera.setState(CameraState::READY);
+        } else {
+            camera.setState(CameraState::UNINITIALIZED);
+        }
+
+        return camera;
+    }
+
+    /**
+     * @brief Get current lamp intensity
+     */
+    uint8_t getLampIntensity() const override {
+        return _lampIntensity;
+    }
+
+    /**
+     * @brief Get sensor ID (PID)
+     */
+    uint8_t getSensorId() const override {
+        sensor_t* sensor = _driver->getSensor();
+        return sensor ? sensor->id.PID : 0;
     }
 };
 
